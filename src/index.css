@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Neumorphism (soft UI). One surface colour; depth comes from a light and a dark shadow.
+   Palette: #010736 deep navy | #0D1C42 navy | #22396F blue | #FCF1D0 cream */
+
+@layer base {
+  :root {
+    --background: 214 24% 90%;
+    --foreground: 233 96% 11%;
+    --card: 214 24% 90%;
+    --card-foreground: 233 96% 11%;
+    --primary: 222 53% 28%;                 /* #22396F */
+    --primary-foreground: 45 88% 92%;
+    --secondary: 214 24% 90%;
+    --secondary-foreground: 233 96% 11%;
+    --muted: 214 24% 90%;
+    --muted-foreground: 222 25% 36%;
+    --accent: 214 24% 86%;
+    --accent-foreground: 233 96% 11%;
+    --destructive: 0 72% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 20% 82%;
+    --input: 214 20% 82%;
+    --ring: 222 53% 28%;
+    --radius: 0.75rem;
+    --neu-light: rgba(255, 255, 255, 0.85);
+    --neu-dark: rgba(150, 165, 190, 0.55);
+  }
+  .dark {
+    --background: 223 40% 15%;              /* soft navy base */
+    --foreground: 45 88% 92%;               /* #FCF1D0 */
+    --card: 223 40% 15%;
+    --card-foreground: 45 88% 92%;
+    --primary: 45 88% 90%;                  /* #FCF1D0 */
+    --primary-foreground: 233 96% 11%;
+    --secondary: 223 40% 15%;
+    --secondary-foreground: 45 88% 92%;
+    --muted: 223 40% 15%;
+    --muted-foreground: 45 22% 72%;
+    --accent: 223 40% 19%;
+    --accent-foreground: 45 88% 92%;
+    --destructive: 0 62% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 223 35% 21%;
+    --input: 223 35% 21%;
+    --ring: 45 88% 90%;
+    --neu-light: rgba(255, 255, 255, 0.07);
+    --neu-dark: rgba(0, 0, 0, 0.6);
+  }
+
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground antialiased; }
+  ::selection { background: hsl(222 53% 28%); color: hsl(45 88% 92%); }
+}
+
+/* Make the shadows stronger or softer by changing the pixel values below. */
+@layer components {
+  .neu-out    { box-shadow: 7px 7px 16px var(--neu-dark), -7px -7px 16px var(--neu-light); }
+  .neu-out-sm { box-shadow: 4px 4px 9px var(--neu-dark), -4px -4px 9px var(--neu-light); }
+  .neu-in     { box-shadow: inset 5px 5px 11px var(--neu-dark), inset -5px -5px 11px var(--neu-light); }
+  .neu-in-sm  { box-shadow: inset 3px 3px 6px var(--neu-dark), inset -3px -3px 6px var(--neu-light); }
+  .neu-hover:hover { box-shadow: 4px 4px 9px var(--neu-dark), -4px -4px 9px var(--neu-light); }
+  .neu-press:active { box-shadow: inset 3px 3px 7px var(--neu-dark), inset -3px -3px 7px var(--neu-light); }
+}
