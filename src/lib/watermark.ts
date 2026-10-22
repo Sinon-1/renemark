@@ -85,11 +85,11 @@ export async function exportOne(p: PhotoItem, mark: HTMLImageElement | null, s: 
   return toBlob(c, outType(p.type));
 }
 
-/** Apply the same settings to every photo and pack the results into one ZIP. */
+/** Apply each photo's own settings and pack the results into one ZIP. */
 export async function exportBatch(
   photos: PhotoItem[],
   mark: HTMLImageElement | null,
-  s: WatermarkSettings,
+  settingsFor: (id: string) => WatermarkSettings,
   onProgress: (done: number, total: number) => void
 ) {
   const zip = new JSZip();
@@ -99,7 +99,7 @@ export async function exportBatch(
     let name = outputName(photos[i]);
     if (used.has(name)) name = `${i + 1}-${name}`;
     used.add(name);
-    zip.file(name, await exportOne(photos[i], mark, s));
+    zip.file(name, await exportOne(photos[i], mark, settingsFor(photos[i].id)));
     await new Promise((r) => setTimeout(r)); // let the page breathe between photos
   }
   onProgress(photos.length, photos.length);

@@ -22,14 +22,23 @@ export default function App() {
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [mark, setMark] = useState<HTMLImageElement | null>(null);
   const [markFile, setMarkFile] = useState<File | null>(null);
-  const [settings, setSettings] = useState<WatermarkSettings>(DEFAULT_SETTINGS);
+  // Each photo keeps its own watermark settings, so editing one never changes the others.
+  const [photoSettings, setPhotoSettings] = useState<Record<string, WatermarkSettings>>({});
+  const [defaults, setDefaults] = useState<WatermarkSettings>(DEFAULT_SETTINGS); // used while no photo is added yet
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [bgBusy, setBgBusy] = useState(false);
   const moreRef = useRef<HTMLInputElement>(null);
 
   const current = photos.find((p) => p.id === currentId) ?? photos[0] ?? null;
-  const patch = (p: Partial<WatermarkSettings>) => setSettings((s) => ({ ...s, ...p }));
+  const settingsFor = (id: string) => photoSettings[id] ?? defaults;
+  const settings = current ? settingsFor(current.id) : defaults;
+  // Change settings for the photo you are editing only.
+  const patch = (p: Partial<WatermarkSettings>) => {
+    if (!current) return setDefaults((d) => ({ ...d, ...p }));
+    const id = current.id;
+    setPhotoSettings((m) => ({ ...m, [id]: { ...(m[id] ?? defaults), ...p } }));
+  };
 
   // Free the memory of removed photos.
   useEffect(() => () => photos.forEach((p) => URL.revokeObjectURL(p.url)), []); // eslint-disable-line
@@ -42,7 +51,16 @@ export default function App() {
         items.push({ id: crypto.randomUUID(), name: f.name, type: f.type, img, url: img.src });
       } catch { setStatus(`Could not read ${f.name}.`); }
     }
-    if (items.length) setPhotos((p) => [...p, ...items]);
+    if (items.length) {
+      // New photos start with the same look as the photo you are on, then are independent.
+      const start = { ...settings };
+      setPhotoSettings((m) => {
+        const next = { ...m };
+        items.forEach((i) => { next[i.id] = { ...start }; });
+        return next;
+      });
+      setPhotos((p) => [...p, ...items]);
+    }
   };
 
   const setMarkFromFile = async (file: File) => {
@@ -54,7 +72,7 @@ export default function App() {
 
   const applyPreset = async (p: Preset) => {
     const { id: _id, name: _n, asset_path, ...s } = p;
-    setSettings(s);
+    patch(s); // a preset applies to the photo you are editing only
     if (asset_path) {
       try {
         const blob = await downloadAsset(asset_path);
@@ -82,6 +100,7 @@ export default function App() {
     const p = photos.find((x) => x.id === id);
     if (p) URL.revokeObjectURL(p.url);
     setPhotos((list) => list.filter((x) => x.id !== id));
+    setPhotoSettings((m) => { const { [id]: _gone, ...rest } = m; return rest; });
   };
 
   const downloadOne = async () => {
@@ -92,7 +111,7 @@ export default function App() {
   const downloadAll = async () => {
     setBusy(true);
     try {
-      const zip = await exportBatch(photos, mark, settings, (d, t) =>
+      const zip = await exportBatch(photos, mark, settingsFor, (d, t) =>
         setStatus(d < t ? `Processing ${d + 1} of ${t}…` : `Done. ${t} photo${t > 1 ? "s" : ""} saved.`)
       );
       saveBlob(zip, "renemark-batch.zip");
