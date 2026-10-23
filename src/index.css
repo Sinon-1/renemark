@@ -63,4 +63,4 @@
   .neu-in-sm  { box-shadow: inset 3px 3px 6px var(--neu-dark), inset -3px -3px 6px var(--neu-light); }
   .neu-hover:hover { box-shadow: 4px 4px 9px var(--neu-dark), -4px -4px 9px var(--neu-light); }
   .neu-press:active { box-shadow: inset 3px 3px 7px var(--neu-dark), inset -3px -3px 7px var(--neu-light); }
-}
+}

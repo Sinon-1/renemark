@@ -143,19 +143,37 @@ export interface PhotoItem {
   type: string;
   img: HTMLImageElement;
   url: string;
+  thumb?: string; // tiny preview for the photo strip (keeps the page light on phones)
 }
 
 export function loadImage(blob: Blob): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
     const img = new Image();
+    img.decoding = "async";
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error("Could not read this image."));
     img.src = url;
   });
 }
 
-function drawLayer(ctx: CanvasRenderingContext2D, l: Layer, W: number, H: number) {
+/** Small thumbnail for the photo strip, so the browser never has to scale a 12 MP photo down to 64 px. */
+export function makePhotoAssets(img: HTMLImageElement): { thumb: string } {
+  const side = 160;
+  const k = Math.min(1, side / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(img.naturalWidth * k));
+  c.height = Math.max(1, Math.round(img.naturalHeight * k));
+  const ctx = c.getContext("2d")!;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  const thumb = c.toDataURL("image/jpeg", 0.7);
+  c.width = c.height = 0; // free the canvas memory right away
+  return { thumb };
+}
+
+/** k = how much smaller the canvas is than the photo. Canvas shadows ignore the transform, so they are scaled by hand. */
+function drawLayer(ctx: CanvasRenderingContext2D, l: Layer, W: number, H: number, k = 1) {
   if (!isRenderable(l)) return;
   const { w, h } = layerBox(l, W);
   ctx.save();
@@ -164,8 +182,8 @@ function drawLayer(ctx: CanvasRenderingContext2D, l: Layer, W: number, H: number
   ctx.rotate((l.rotation * Math.PI) / 180);
   if (l.shadow) {
     ctx.shadowColor = l.shadowColor;
-    ctx.shadowBlur = (l.shadowBlur / 100) * h * 0.6;
-    ctx.shadowOffsetX = ctx.shadowOffsetY = h * 0.06;
+    ctx.shadowBlur = (l.shadowBlur / 100) * h * 0.6 * k;
+    ctx.shadowOffsetX = ctx.shadowOffsetY = h * 0.06 * k;
   }
   if (l.kind === "image") {
     ctx.drawImage(l.img!, -w / 2, -h / 2, w, h);
@@ -179,20 +197,16 @@ function drawLayer(ctx: CanvasRenderingContext2D, l: Layer, W: number, H: number
   ctx.restore();
 }
 
-/** The core engine: draw the photo, then every watermark on top. Used by the preview AND the export. */
-export function renderWatermark(canvas: HTMLCanvasElement, photo: HTMLImageElement, layers: Layer[], highlightId?: string | null) {
-  const W = (canvas.width = photo.naturalWidth);
-  const H = (canvas.height = photo.naturalHeight);
-  const ctx = canvas.getContext("2d")!;
-  ctx.drawImage(photo, 0, 0);
-  layers.forEach((l) => drawLayer(ctx, l, W, H));
+/** Draw every watermark (and, for the preview only, the selection outline). Coordinates stay in photo pixels. */
+function paint(ctx: CanvasRenderingContext2D, layers: Layer[], W: number, H: number, k: number, highlightId?: string | null) {
+  ctx.save();
+  ctx.scale(k, k);
+  layers.forEach((l) => drawLayer(ctx, l, W, H, k));
 
-  // Selection outline: preview only (the export never passes highlightId).
   const sel = highlightId ? layers.find((l) => l.id === highlightId) : null;
   if (sel && isRenderable(sel)) {
     const { w, h } = layerBox(sel, W);
-    const pad = W * 0.006, lw = Math.max(2, W * 0.0025);
-    ctx.save();
+    const pad = W * 0.006, lw = Math.max(2 / k, W * 0.0025);
     ctx.translate(sel.x * W, sel.y * H);
     ctx.rotate((sel.rotation * Math.PI) / 180);
     ctx.lineWidth = lw;
@@ -201,8 +215,47 @@ export function renderWatermark(canvas: HTMLCanvasElement, photo: HTMLImageEleme
     ctx.setLineDash([lw * 3, lw * 2]);
     ctx.strokeStyle = "#ffffff";
     ctx.strokeRect(-w / 2 - pad, -h / 2 - pad, w + 2 * pad, h + 2 * pad);
-    ctx.restore();
   }
+  ctx.restore();
+}
+
+/** A smaller copy of the photo used only for the live preview, so dragging stays smooth on phones. */
+export interface PreviewSource { src: CanvasImageSource; w: number; h: number; k: number }
+
+export function makePreviewSource(photo: HTMLImageElement, maxSide: number): PreviewSource {
+  const W = photo.naturalWidth, H = photo.naturalHeight;
+  const k = Math.min(1, maxSide / Math.max(W, H));
+  if (k >= 1) return { src: photo, w: W, h: H, k: 1 };
+  const c = document.createElement("canvas");
+  c.width = Math.round(W * k);
+  c.height = Math.round(H * k);
+  const ctx = c.getContext("2d")!;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(photo, 0, 0, c.width, c.height);
+  return { src: c, w: c.width, h: c.height, k };
+}
+
+/** Live preview: draws the small copy plus the watermarks, scaled to match. Cheap enough to run on every drag frame. */
+export function renderPreview(
+  canvas: HTMLCanvasElement, source: PreviewSource, photoW: number, photoH: number,
+  layers: Layer[], highlightId?: string | null
+) {
+  if (canvas.width !== source.w) canvas.width = source.w; // resizing clears and reallocates, so only when needed
+  if (canvas.height !== source.h) canvas.height = source.h;
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(source.src, 0, 0, source.w, source.h);
+  paint(ctx, layers, photoW, photoH, source.k, highlightId);
+}
+
+/** The export engine: the photo at full size (or scaled by k), then every watermark on top. */
+export function renderWatermark(canvas: HTMLCanvasElement, photo: HTMLImageElement, layers: Layer[], k = 1) {
+  const W = photo.naturalWidth, H = photo.naturalHeight;
+  canvas.width = Math.max(1, Math.round(W * k));
+  canvas.height = Math.max(1, Math.round(H * k));
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(photo, 0, 0, canvas.width, canvas.height);
+  paint(ctx, layers, W, H, k);
 }
 
 /* ---------- Export ---------- */
@@ -216,10 +269,20 @@ export function outputName(p: PhotoItem) {
   return `${p.name.replace(/\.[^.]+$/, "")}-renemark.${ext}`;
 }
 
+/** Phones (iPhone Safari especially) fail to create canvases above about 16.7 million pixels.
+ *  Bigger photos are scaled down just enough to fit. Raise this on desktop-only use. */
+export const MAX_EXPORT_PIXELS = 16_000_000;
+
 export async function exportOne(p: PhotoItem, layers: Layer[]) {
   const c = document.createElement("canvas");
-  renderWatermark(c, p.img, layers);
-  return toBlob(c, outType(p.type));
+  const pixels = p.img.naturalWidth * p.img.naturalHeight;
+  const k = Math.min(1, Math.sqrt(MAX_EXPORT_PIXELS / pixels));
+  renderWatermark(c, p.img, layers, k);
+  try {
+    return await toBlob(c, outType(p.type));
+  } finally {
+    c.width = c.height = 0; // hand the canvas memory back before the next photo
+  }
 }
 
 /** Give each photo its own watermarks and pack the results into one ZIP. */
@@ -239,7 +302,8 @@ export async function exportBatch(
     await new Promise((r) => setTimeout(r)); // let the page breathe between photos
   }
   onProgress(photos.length, photos.length);
-  return zip.generateAsync({ type: "blob" });
+  // Photos are already compressed, so just store them: much faster and lighter on a phone.
+  return zip.generateAsync({ type: "blob", compression: "STORE", streamFiles: true });
 }
 
 export function saveBlob(blob: Blob, filename: string) {

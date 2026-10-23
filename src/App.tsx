@@ -11,7 +11,7 @@ import { removeBackgroundAI, removeSolidColor } from "@/lib/background";
 import { downloadAsset, type Preset } from "@/lib/presets";
 import {
   DEFAULT_SETTINGS, anchorLayer, clampLayer, exportBatch, exportOne, isRenderable, loadImage,
-  newImageLayer, newTextLayer, outputName, saveBlob,
+  makePhotoAssets, newImageLayer, newTextLayer, outputName, saveBlob,
   type ImageLayer, type Layer, type LayerPatch, type PhotoItem, type WatermarkSettings,
 } from "@/lib/watermark";
 import { cn } from "@/lib/utils";
@@ -57,7 +57,7 @@ export default function App() {
     for (const f of files.filter((f) => f.type.startsWith("image/"))) {
       try {
         const img = await loadImage(f);
-        items.push({ id: crypto.randomUUID(), name: f.name, type: f.type, img, url: img.src });
+        items.push({ id: crypto.randomUUID(), name: f.name, type: f.type, img, url: img.src, ...makePhotoAssets(img) });
       } catch { setStatus(`Could not read ${f.name}.`); }
     }
     if (items.length) {
@@ -203,7 +203,7 @@ export default function App() {
                     onClick={() => setCurrentId(p.id)}
                     className={cn("block h-16 w-16 overflow-hidden rounded-md border", p.id === current?.id && "ring-2 ring-primary")}
                   >
-                    <img src={p.url} alt="" className="h-full w-full object-cover" />
+                    <img src={p.thumb ?? p.url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
                   </button>
                   <button
                     type="button"
