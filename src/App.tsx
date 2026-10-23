@@ -10,34 +10,43 @@ import { useTheme } from "@/hooks/useTheme";
 import { removeBackgroundAI, removeSolidColor } from "@/lib/background";
 import { downloadAsset, type Preset } from "@/lib/presets";
 import {
-  DEFAULT_SETTINGS, anchorPosition, exportBatch, exportOne, loadImage, outputName, saveBlob,
-  type PhotoItem, type WatermarkSettings,
+  DEFAULT_SETTINGS, anchorLayer, clampLayer, exportBatch, exportOne, isRenderable, loadImage,
+  newImageLayer, newTextLayer, outputName, saveBlob,
+  type ImageLayer, type Layer, type LayerPatch, type PhotoItem, type WatermarkSettings,
 } from "@/lib/watermark";
 import { cn } from "@/lib/utils";
+
+const KEY_DEFAULT = "__default"; // watermarks set up before any photo is added
 
 export default function App() {
   const user = useAuth();
   const { dark, toggle } = useTheme();
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
-  const [mark, setMark] = useState<HTMLImageElement | null>(null);
-  const [markFile, setMarkFile] = useState<File | null>(null);
-  // Each photo keeps its own watermark settings, so editing one never changes the others.
-  const [photoSettings, setPhotoSettings] = useState<Record<string, WatermarkSettings>>({});
-  const [defaults, setDefaults] = useState<WatermarkSettings>(DEFAULT_SETTINGS); // used while no photo is added yet
+  // Every photo has its own list of watermarks, so editing one photo never changes another.
+  const [photoLayers, setPhotoLayers] = useState<Record<string, Layer[]>>({});
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [bgBusy, setBgBusy] = useState(false);
   const moreRef = useRef<HTMLInputElement>(null);
 
   const current = photos.find((p) => p.id === currentId) ?? photos[0] ?? null;
-  const settingsFor = (id: string) => photoSettings[id] ?? defaults;
-  const settings = current ? settingsFor(current.id) : defaults;
-  // Change settings for the photo you are editing only.
-  const patch = (p: Partial<WatermarkSettings>) => {
-    if (!current) return setDefaults((d) => ({ ...d, ...p }));
-    const id = current.id;
-    setPhotoSettings((m) => ({ ...m, [id]: { ...(m[id] ?? defaults), ...p } }));
+  const key = current?.id ?? KEY_DEFAULT;
+  const layers = photoLayers[key] ?? [];
+  const selected = layers.find((l) => l.id === selectedId) ?? layers[0] ?? null;
+  const layersFor = (id: string) => photoLayers[id] ?? [];
+
+  const editLayers = (forKey: string, fn: (ls: Layer[]) => Layer[]) =>
+    setPhotoLayers((m) => ({ ...m, [forKey]: fn(m[forKey] ?? []) }));
+
+  // Keep a watermark inside its photo whenever it changes.
+  const fit = (l: Layer, photo?: PhotoItem | null): Layer =>
+    photo ? clampLayer(l, photo.img.naturalWidth, photo.img.naturalHeight) : l;
+
+  const updateLayer = (id: string, patch: LayerPatch, forKey = key) => {
+    const photo = photos.find((p) => p.id === forKey);
+    editLayers(forKey, (ls) => ls.map((l) => (l.id === id ? fit({ ...l, ...patch } as Layer, photo) : l)));
   };
 
   // Free the memory of removed photos.
@@ -52,45 +61,86 @@ export default function App() {
       } catch { setStatus(`Could not read ${f.name}.`); }
     }
     if (items.length) {
-      // New photos start with the same look as the photo you are on, then are independent.
-      const start = { ...settings };
-      setPhotoSettings((m) => {
+      // New photos start with the same watermarks as the photo you are on, then are independent.
+      const start = layers;
+      setPhotoLayers((m) => {
         const next = { ...m };
-        items.forEach((i) => { next[i.id] = { ...start }; });
+        items.forEach((i) => { next[i.id] = start.map((l) => fit({ ...l }, i as PhotoItem)); });
         return next;
       });
       setPhotos((p) => [...p, ...items]);
     }
   };
 
-  const setMarkFromFile = async (file: File) => {
-    const img = await loadImage(file);
-    setMark(img);
-    setMarkFile(file);
-    if (current) patch(anchorPosition(2, 2, settings, current.img, img));
+  const addText = () => {
+    const layer = fit(newTextLayer(layers.length), current);
+    editLayers(key, (ls) => [...ls, layer]);
+    setSelectedId(layer.id);
   };
+
+  const addImage = async (file: File) => {
+    const k = key, photo = current;
+    try {
+      const img = await loadImage(file);
+      const base = newImageLayer(img, file);
+      const layer = photo ? fit({ ...base, ...anchorLayer(base, 2, 2, photo.img) }, photo) : base;
+      editLayers(k, (ls) => [...ls, layer]);
+      setSelectedId(layer.id);
+    } catch (e) { setStatus((e as Error).message); }
+  };
+
+  const deleteLayer = (id: string) => editLayers(key, (ls) => ls.filter((l) => l.id !== id));
+
+  const anchor = (id: string, col: number, row: number) => {
+    const l = layers.find((x) => x.id === id);
+    if (l && current) updateLayer(id, anchorLayer(l, col, row, current.img));
+  };
+
+  // Copy this photo's watermarks onto every photo (only when you press the button).
+  const applyToAll = () =>
+    setPhotoLayers((m) => {
+      const next = { ...m };
+      photos.forEach((p) => { next[p.id] = layers.map((l) => fit({ ...l }, p)); });
+      return next;
+    });
+
+  // Presets save and load one image watermark: the selected one, or the first image watermark.
+  const imageLayer: ImageLayer | null =
+    selected?.kind === "image" ? selected : (layers.find((l) => l.kind === "image") as ImageLayer | undefined) ?? null;
+  const presetSettings: WatermarkSettings = imageLayer
+    ? { scale: imageLayer.scale, opacity: imageLayer.opacity, rotation: imageLayer.rotation, x: imageLayer.x, y: imageLayer.y }
+    : DEFAULT_SETTINGS;
 
   const applyPreset = async (p: Preset) => {
     const { id: _id, name: _n, asset_path, ...s } = p;
-    patch(s); // a preset applies to the photo you are editing only
+    const k = key;
+    let target = imageLayer?.id;
+    if (target) {
+      updateLayer(target, s);
+    } else {
+      const base = { ...newImageLayer(null, null), ...s };
+      target = base.id;
+      editLayers(k, (ls) => [...ls, base]);
+    }
+    setSelectedId(target);
     if (asset_path) {
       try {
         const blob = await downloadAsset(asset_path);
-        setMark(await loadImage(blob));
-        setMarkFile(new File([blob], asset_path.split("/").pop() ?? "watermark.png", { type: blob.type }));
-      }
-      catch (e) { setStatus((e as Error).message); }
+        const file = new File([blob], asset_path.split("/").pop() ?? "watermark.png", { type: blob.type });
+        updateLayer(target, { img: await loadImage(blob), file }, k);
+      } catch (e) { setStatus((e as Error).message); }
     }
   };
 
   const removeBg = async (mode: "ai" | "solid") => {
-    if (!markFile) return;
+    const file = imageLayer?.file;
+    if (!imageLayer || !file) return;
+    const id = imageLayer.id, k = key;
     setBgBusy(true);
     setStatus(mode === "ai" ? "Removing background. The first time can take a minute…" : "Removing colour…");
     try {
-      const out = mode === "ai" ? await removeBackgroundAI(markFile) : await removeSolidColor(markFile);
-      setMark(await loadImage(out));
-      setMarkFile(out);
+      const out = mode === "ai" ? await removeBackgroundAI(file) : await removeSolidColor(file);
+      updateLayer(id, { img: await loadImage(out), file: out as File }, k);
       setStatus("Background removed.");
     } catch (e) { setStatus(`Could not remove the background: ${(e as Error).message}`); }
     setBgBusy(false);
@@ -100,18 +150,21 @@ export default function App() {
     const p = photos.find((x) => x.id === id);
     if (p) URL.revokeObjectURL(p.url);
     setPhotos((list) => list.filter((x) => x.id !== id));
-    setPhotoSettings((m) => { const { [id]: _gone, ...rest } = m; return rest; });
+    setPhotoLayers((m) => { const { [id]: _gone, ...rest } = m; return rest; });
   };
+
+  const canOne = !!current && layers.some(isRenderable);
+  const canAll = photos.some((p) => layersFor(p.id).some(isRenderable));
 
   const downloadOne = async () => {
     if (!current) return;
-    saveBlob(await exportOne(current, mark, settings), outputName(current));
+    saveBlob(await exportOne(current, layers), outputName(current));
   };
 
   const downloadAll = async () => {
     setBusy(true);
     try {
-      const zip = await exportBatch(photos, mark, settingsFor, (d, t) =>
+      const zip = await exportBatch(photos, layersFor, (d, t) =>
         setStatus(d < t ? `Processing ${d + 1} of ${t}…` : `Done. ${t} photo${t > 1 ? "s" : ""} saved.`)
       );
       saveBlob(zip, "renemark-batch.zip");
@@ -132,9 +185,10 @@ export default function App() {
         <section className="space-y-3">
           <PreviewStage
             photo={current}
-            mark={mark}
-            settings={settings}
-            onMove={(x, y) => patch({ x, y })}
+            layers={layers}
+            selectedId={selected?.id ?? null}
+            onSelect={setSelectedId}
+            onMove={(id, x, y) => updateLayer(id, { x, y })}
             onFiles={addFiles}
           />
 
@@ -174,23 +228,28 @@ export default function App() {
 
         <aside className="space-y-4">
           <Card>
-            <CardHeader><CardTitle>Watermark</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Watermarks</CardTitle></CardHeader>
             <CardContent className="space-y-5">
               <Controls
-                settings={settings}
-                hasMark={!!mark}
-                onChange={patch}
-                onAnchor={(c, r) => current && patch(anchorPosition(c, r, settings, current.img, mark))}
-                onMarkFile={setMarkFromFile}
+                layers={layers}
+                selected={selected}
+                onSelect={setSelectedId}
+                onAddText={addText}
+                onAddImage={addImage}
+                onDelete={deleteLayer}
+                onChange={(id, patch) => updateLayer(id, patch)}
+                onAnchor={anchor}
                 bgBusy={bgBusy}
                 onRemoveBg={() => removeBg("ai")}
                 onRemoveSolid={() => removeBg("solid")}
+                canApplyAll={photos.length > 1 && layers.length > 0}
+                onApplyAll={applyToAll}
               />
               <div className="space-y-2 border-t pt-4">
-                <Button className="w-full" onClick={downloadAll} disabled={!photos.length || !mark || busy}>
+                <Button className="w-full" onClick={downloadAll} disabled={!canAll || busy}>
                   <Download className="h-4 w-4" /> Download all as ZIP
                 </Button>
-                <Button className="w-full" variant="outline" onClick={downloadOne} disabled={!current || !mark || busy}>
+                <Button className="w-full" variant="outline" onClick={downloadOne} disabled={!canOne || busy}>
                   Download this photo
                 </Button>
                 <p className="min-h-5 text-sm text-muted-foreground" role="status">{status}</p>
@@ -201,7 +260,9 @@ export default function App() {
 
           <Card>
             <CardHeader><CardTitle>Account and presets</CardTitle></CardHeader>
-            <CardContent><AccountPresets user={user} settings={settings} markFile={markFile} onApply={applyPreset} /></CardContent>
+            <CardContent>
+              <AccountPresets user={user} settings={presetSettings} markFile={imageLayer?.file ?? null} onApply={applyPreset} />
+            </CardContent>
           </Card>
         </aside>
       </main>
