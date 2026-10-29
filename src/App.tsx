@@ -72,20 +72,29 @@ export default function App() {
     }
   };
 
-  const addText = () => {
-    const layer = fit(newTextLayer(layers.length), current);
-    editLayers(key, (ls) => [...ls, layer]);
-    setSelectedId(layer.id);
+  // A new watermark goes onto EVERY photo in the batch (same id, so it stays selected when you switch photos).
+  // Each photo keeps its own copy afterwards, so you can still tweak one photo without touching the rest.
+  const addToAll = (base: Layer, place?: (l: Layer, p: PhotoItem) => Layer) => {
+    setPhotoLayers((m) => {
+      const next = { ...m };
+      if (photos.length === 0) {
+        next[KEY_DEFAULT] = [...(m[KEY_DEFAULT] ?? []), base]; // no photos yet: new photos will start with it
+      } else {
+        photos.forEach((p) => {
+          next[p.id] = [...(m[p.id] ?? []), fit(place ? place(base, p) : base, p)];
+        });
+      }
+      return next;
+    });
+    setSelectedId(base.id);
   };
 
+  const addText = () => addToAll(newTextLayer(layers.length));
+
   const addImage = async (file: File) => {
-    const k = key, photo = current;
     try {
       const img = await loadImage(file);
-      const base = newImageLayer(img, file);
-      const layer = photo ? fit({ ...base, ...anchorLayer(base, 2, 2, photo.img) }, photo) : base;
-      editLayers(k, (ls) => [...ls, layer]);
-      setSelectedId(layer.id);
+      addToAll(newImageLayer(img, file), (b, p) => ({ ...b, ...anchorLayer(b, 2, 2, p.img) }) as Layer);
     } catch (e) { setStatus((e as Error).message); }
   };
 
@@ -135,12 +144,17 @@ export default function App() {
   const removeBg = async (mode: "ai" | "solid") => {
     const file = imageLayer?.file;
     if (!imageLayer || !file) return;
-    const id = imageLayer.id, k = key;
+    const id = imageLayer.id;
     setBgBusy(true);
     setStatus(mode === "ai" ? "Removing background. The first time can take a minute…" : "Removing colour…");
     try {
       const out = mode === "ai" ? await removeBackgroundAI(file) : await removeSolidColor(file);
-      updateLayer(id, { img: await loadImage(out), file: out as File }, k);
+      const patch = { img: await loadImage(out), file: out as File };
+      setPhotoLayers((m) => {
+        const next: Record<string, Layer[]> = {};
+        for (const k of Object.keys(m)) next[k] = m[k].map((l) => (l.id === id && l.kind === "image" ? { ...l, ...patch } : l));
+        return next;
+      });
       setStatus("Background removed.");
     } catch (e) { setStatus(`Could not remove the background: ${(e as Error).message}`); }
     setBgBusy(false);
