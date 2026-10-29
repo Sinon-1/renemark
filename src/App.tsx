@@ -244,7 +244,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen pb-[env(safe-area-inset-bottom)]">
+    <div className="min-h-screen max-w-full overflow-x-clip pb-[env(safe-area-inset-bottom)]">
       <header className="flex items-center justify-between border-b px-4 py-3 sm:px-6">
         <h1 className="text-2xl font-extrabold tracking-tight">Renemark</h1>
         <Button variant="ghost" size="icon" onClick={toggle} aria-label="Switch between dark and light mode">
@@ -252,8 +252,8 @@ export default function App() {
         </Button>
       </header>
 
-      <main className="mx-auto grid max-w-6xl gap-4 p-3 sm:p-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <section className="space-y-3">
+      <main className="mx-auto grid max-w-6xl grid-cols-[minmax(0,1fr)] gap-4 p-3 sm:p-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <section className="min-w-0 space-y-3">
           <PreviewStage
             photo={current}
             layers={layers}
@@ -264,40 +264,44 @@ export default function App() {
           />
 
           {photos.length > 0 && (
-            <div className="flex items-center gap-2 overflow-x-auto pb-1" aria-label="Photos in this batch">
-              {photos.map((p) => (
-                <div key={p.id} className="relative shrink-0">
-                  <button
-                    type="button"
-                    aria-label={`Preview ${p.name}`}
-                    aria-current={p.id === current?.id}
-                    onClick={() => setCurrentId(p.id)}
-                    className={cn("block h-16 w-16 overflow-hidden rounded-md border", p.id === current?.id && "ring-2 ring-primary")}
-                  >
-                    <img src={p.thumb ?? p.url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${p.name}`}
-                    onClick={() => removePhoto(p.id)}
-                    className="absolute -right-1 -top-1 rounded-full bg-destructive p-1 text-destructive-foreground"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-              <input
-                ref={moreRef} type="file" accept="image/*" multiple hidden
-                onChange={(e) => { addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }}
-              />
-              <Button variant="outline" className="h-16 w-16 shrink-0" aria-label="Add more photos" onClick={() => moreRef.current?.click()}>
-                <Plus className="h-5 w-5" />
-              </Button>
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">{photos.length} photo{photos.length > 1 ? "s" : ""}. Swipe sideways to see more.</p>
+              {/* Side-scrolling row. The row scrolls by itself; the page never gets wider. */}
+              <div className="flex max-w-full items-center gap-3 overflow-x-auto overscroll-x-contain pb-2 pr-2 pt-2" aria-label="Photos in this batch">
+                {photos.map((p) => (
+                  <div key={p.id} className="relative shrink-0">
+                    <button
+                      type="button"
+                      aria-label={`Preview ${p.name}`}
+                      aria-current={p.id === current?.id}
+                      onClick={() => setCurrentId(p.id)}
+                      className={cn("block h-16 w-16 overflow-hidden rounded-md border", p.id === current?.id && "ring-2 ring-primary")}
+                    >
+                      <img src={p.thumb ?? p.url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${p.name}`}
+                      onClick={() => removePhoto(p.id)}
+                      className="absolute -right-1 -top-1 rounded-full bg-destructive p-1.5 text-destructive-foreground"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+                <input
+                  ref={moreRef} type="file" accept="image/*" multiple hidden
+                  onChange={(e) => { addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }}
+                />
+                <Button variant="outline" className="h-16 w-16 shrink-0" aria-label="Add more photos" onClick={() => moreRef.current?.click()}>
+                  <Plus className="h-5 w-5" />
+                </Button>
+              </div>
             </div>
           )}
         </section>
 
-        <aside className="space-y-4">
+        <aside className="min-w-0 space-y-4">
           <Card>
             <CardHeader><CardTitle>Watermarks</CardTitle></CardHeader>
             <CardContent className="space-y-5">
