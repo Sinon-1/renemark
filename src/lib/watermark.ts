@@ -285,31 +285,77 @@ export async function exportOne(p: PhotoItem, layers: Layer[]) {
   }
 }
 
-/** Give each photo its own watermarks and pack the results into one ZIP. */
+export interface BatchResult {
+  parts: { name: string; blob: Blob }[]; // one ZIP normally; several when the batch is big
+  saved: number;
+  failed: string[];  // photos that could not be processed (the rest are still saved)
+  resized: number;   // photos scaled down to fit the phone-safe size limit
+  cancelled: boolean;
+}
+
+/** Give each photo its own watermarks and pack the results into ZIP file(s).
+ *  One bad photo no longer stops the batch, and very big batches are split so a phone never runs out of memory. */
 export async function exportBatch(
   photos: PhotoItem[],
   layersFor: (id: string) => Layer[],
-  onProgress: (done: number, total: number) => void
-) {
-  const zip = new JSZip();
+  onProgress: (done: number, total: number) => void,
+  opts: { signal?: AbortSignal; maxPartBytes?: number } = {}
+): Promise<BatchResult> {
+  const maxPart = opts.maxPartBytes ?? 250 * 1024 * 1024;
+  const blobs: Blob[] = [];
+  const failed: string[] = [];
   const used = new Set<string>();
+  let zip = new JSZip(), inPart = 0, bytes = 0, saved = 0, resized = 0;
+
+  const flush = async () => {
+    if (inPart === 0) return;
+    // Photos are already compressed, so just store them: much faster and lighter on a phone.
+    blobs.push(await zip.generateAsync({ type: "blob", compression: "STORE", streamFiles: true }));
+    zip = new JSZip(); inPart = 0; bytes = 0;
+  };
+
   for (let i = 0; i < photos.length; i++) {
+    if (opts.signal?.aborted) return { parts: [], saved: 0, failed, resized, cancelled: true };
     onProgress(i, photos.length);
-    let name = outputName(photos[i]);
-    if (used.has(name)) name = `${i + 1}-${name}`;
-    used.add(name);
-    zip.file(name, await exportOne(photos[i], layersFor(photos[i].id)));
+    const p = photos[i];
+    try {
+      const blob = await exportOne(p, layersFor(p.id));
+      if (inPart > 0 && bytes + blob.size > maxPart) await flush();
+      const base = outputName(p);
+      let name = base, n = 1;
+      while (used.has(name)) name = base.replace(/(\.[^.]+)$/, ` (${++n})$1`); // two photos with the same name never overwrite each other
+      used.add(name);
+      zip.file(name, blob);
+      inPart++; bytes += blob.size; saved++;
+      if (p.img.naturalWidth * p.img.naturalHeight > MAX_EXPORT_PIXELS) resized++;
+    } catch {
+      failed.push(p.name);
+    }
     await new Promise((r) => setTimeout(r)); // let the page breathe between photos
   }
   onProgress(photos.length, photos.length);
-  // Photos are already compressed, so just store them: much faster and lighter on a phone.
-  return zip.generateAsync({ type: "blob", compression: "STORE", streamFiles: true });
+  if (opts.signal?.aborted) return { parts: [], saved: 0, failed, resized, cancelled: true };
+  await flush();
+
+  const parts = blobs.map((blob, i) => ({
+    blob,
+    name: blobs.length === 1 ? "renemark-batch.zip" : `renemark-batch-part-${i + 1}-of-${blobs.length}.zip`,
+  }));
+  return { parts, saved, failed, resized, cancelled: false };
+}
+
+export function saveUrl(url: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a); // some browsers ignore links that are not in the page
+  a.click();
+  a.remove();
 }
 
 export function saveBlob(blob: Blob, filename: string) {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  const url = URL.createObjectURL(blob);
+  saveUrl(url, filename);
+  setTimeout(() => URL.revokeObjectURL(url), 60_000); // big files need time; 4 seconds could cut them off
 }

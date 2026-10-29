@@ -7,11 +7,11 @@ import { PreviewStage } from "@/components/PreviewStage";
 import { AccountPresets } from "@/components/AccountPresets";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
-import { removeBackgroundAI, removeSolidColor } from "@/lib/background";
+import { removeBackgroundAI, removeSolidColor, shrinkImage } from "@/lib/background";
 import { downloadAsset, type Preset } from "@/lib/presets";
 import {
   DEFAULT_SETTINGS, anchorLayer, clampLayer, exportBatch, exportOne, isRenderable, loadImage,
-  makePhotoAssets, newImageLayer, newTextLayer, outputName, saveBlob,
+  makePhotoAssets, newImageLayer, newTextLayer, outputName, saveBlob, saveUrl,
   type ImageLayer, type Layer, type LayerPatch, type PhotoItem, type WatermarkSettings,
 } from "@/lib/watermark";
 import { cn } from "@/lib/utils";
@@ -30,6 +30,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [bgBusy, setBgBusy] = useState(false);
   const moreRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  // Finished ZIP files. They also appear as tap-to-save buttons, because phones can block a download that
+  // starts by itself after a long wait.
+  const [ready, setReady] = useState<{ name: string; url: string; size: number }[]>([]);
+  const clearReady = () => setReady((r) => { r.forEach((x) => URL.revokeObjectURL(x.url)); return r.length ? [] : r; });
 
   const current = photos.find((p) => p.id === currentId) ?? photos[0] ?? null;
   const key = current?.id ?? KEY_DEFAULT;
@@ -49,17 +55,30 @@ export default function App() {
     editLayers(forKey, (ls) => ls.map((l) => (l.id === id ? fit({ ...l, ...patch } as Layer, photo) : l)));
   };
 
+  useEffect(() => { clearReady(); }, [photos, photoLayers]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Free the memory of removed photos.
   useEffect(() => () => photos.forEach((p) => URL.revokeObjectURL(p.url)), []); // eslint-disable-line
 
   const addFiles = async (files: File[]) => {
     const items: PhotoItem[] = [];
-    for (const f of files.filter((f) => f.type.startsWith("image/"))) {
+    const images = files.filter((f) => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
+    const bad: string[] = [];
+    for (let i = 0; i < images.length; i++) {
+      const f = images[i];
+      if (images.length > 1) setStatus(`Loading photo ${i + 1} of ${images.length}…`);
       try {
         const img = await loadImage(f);
         items.push({ id: crypto.randomUUID(), name: f.name, type: f.type, img, url: img.src, ...makePhotoAssets(img) });
-      } catch { setStatus(`Could not read ${f.name}.`); }
+      } catch { bad.push(f.name); }
     }
+    if (files.length > images.length) bad.push(...files.filter((f) => !images.includes(f)).map((f) => f.name));
+    setStatus(
+      bad.length
+        ? `Could not open ${bad.length} file${bad.length > 1 ? "s" : ""}: ${bad.slice(0, 3).join(", ")}${bad.length > 3 ? "…" : ""}. ` +
+          (bad.some((n) => /\.(heic|heif)$/i.test(n)) ? "HEIC photos are not supported by most browsers. Save them as JPG first." : "Use JPG, PNG or WebP photos.")
+        : ""
+    );
     if (items.length) {
       // New photos start with the same watermarks as the photo you are on, then are independent.
       const start = layers;
@@ -93,8 +112,9 @@ export default function App() {
 
   const addImage = async (file: File) => {
     try {
-      const img = await loadImage(file);
-      addToAll(newImageLayer(img, file), (b, p) => ({ ...b, ...anchorLayer(b, 2, 2, p.img) }) as Layer);
+      const small = await shrinkImage(file); // huge logos only slow everything down
+      const img = await loadImage(small);
+      addToAll(newImageLayer(img, small), (b, p) => ({ ...b, ...anchorLayer(b, 2, 2, p.img) }) as Layer);
     } catch (e) { setStatus((e as Error).message); }
   };
 
@@ -143,12 +163,12 @@ export default function App() {
 
   const removeBg = async (mode: "ai" | "solid") => {
     const file = imageLayer?.file;
-    if (!imageLayer || !file) return;
+    if (!imageLayer || !file || bgBusy) return;
     const id = imageLayer.id;
     setBgBusy(true);
-    setStatus(mode === "ai" ? "Removing background. The first time can take a minute…" : "Removing colour…");
+    setStatus(mode === "ai" ? "Getting ready. The first time can take a minute…" : "Removing colour…");
     try {
-      const out = mode === "ai" ? await removeBackgroundAI(file) : await removeSolidColor(file);
+      const out = mode === "ai" ? await removeBackgroundAI(file, setStatus) : await removeSolidColor(file);
       const patch = { img: await loadImage(out), file: out as File };
       setPhotoLayers((m) => {
         const next: Record<string, Layer[]> = {};
@@ -156,7 +176,7 @@ export default function App() {
         return next;
       });
       setStatus("Background removed.");
-    } catch (e) { setStatus(`Could not remove the background: ${(e as Error).message}`); }
+    } catch (e) { setStatus((e as Error).message); }
     setBgBusy(false);
   };
 
@@ -172,17 +192,54 @@ export default function App() {
 
   const downloadOne = async () => {
     if (!current) return;
-    saveBlob(await exportOne(current, layers), outputName(current));
+    setBusy(true);
+    try {
+      saveBlob(await exportOne(current, layers), outputName(current));
+      setStatus("");
+    } catch { setStatus("Could not save this photo. Try again, or try a smaller photo."); }
+    setBusy(false);
   };
 
   const downloadAll = async () => {
+    clearReady();
+    const ctl = new AbortController();
+    abortRef.current = ctl;
     setBusy(true);
+    setProgress({ done: 0, total: photos.length });
     try {
-      const zip = await exportBatch(photos, layersFor, (d, t) =>
-        setStatus(d < t ? `Processing ${d + 1} of ${t}…` : `Done. ${t} photo${t > 1 ? "s" : ""} saved.`)
+      const phone = window.matchMedia?.("(pointer: coarse)").matches;
+      const res = await exportBatch(
+        photos, layersFor,
+        (d, t) => {
+          setProgress({ done: d, total: t });
+          setStatus(d < t ? `Processing ${d + 1} of ${t}…` : "Packing the ZIP…");
+        },
+        { signal: ctl.signal, maxPartBytes: (phone ? 120 : 400) * 1024 * 1024 }
       );
-      saveBlob(zip, "renemark-batch.zip");
-    } catch (e) { setStatus((e as Error).message); }
+      if (res.cancelled) {
+        setStatus("Cancelled.");
+      } else if (res.parts.length === 0) {
+        setStatus("None of the photos could be processed. Try fewer or smaller photos.");
+      } else {
+        const items = res.parts.map((p) => ({ name: p.name, url: URL.createObjectURL(p.blob), size: p.blob.size }));
+        setReady(items);
+        if (items.length === 1) saveUrl(items[0].url, items[0].name); // starts the download; the button below is the backup
+        const unmarked = photos.filter((p) => !layersFor(p.id).some(isRenderable)).length;
+        setStatus(
+          [
+            `${res.saved} of ${photos.length} photo${photos.length > 1 ? "s" : ""} ready.`,
+            res.failed.length ? `Could not process: ${res.failed.slice(0, 3).join(", ")}${res.failed.length > 3 ? "…" : ""}.` : "",
+            unmarked ? `${unmarked} had no watermark.` : "",
+            res.resized ? `${res.resized} very large photo${res.resized > 1 ? "s were" : " was"} made slightly smaller so phones can save ${res.resized > 1 ? "them" : "it"}.` : "",
+            items.length > 1 ? `Big batch: saved as ${items.length} ZIP files. Tap each one below.` : "If nothing downloaded, tap the button below.",
+          ].filter(Boolean).join(" ")
+        );
+      }
+    } catch (e) {
+      setStatus(`Could not finish: ${(e as Error).message}`);
+    }
+    abortRef.current = null;
+    setProgress(null);
     setBusy(false);
   };
 
@@ -261,12 +318,30 @@ export default function App() {
               />
               <div className="space-y-2 border-t pt-4">
                 <Button className="w-full" onClick={downloadAll} disabled={!canAll || busy}>
-                  <Download className="h-4 w-4" /> Download all as ZIP
+                  <Download className="h-4 w-4" /> {busy && progress ? "Working…" : "Download all as ZIP"}
                 </Button>
                 <Button className="w-full" variant="outline" onClick={downloadOne} disabled={!canOne || busy}>
                   Download this photo
                 </Button>
-                <p className="min-h-5 text-sm text-muted-foreground" role="status">{status}</p>
+                {progress && (
+                  <div className="space-y-2">
+                    <div
+                      role="progressbar" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.done}
+                      className="h-2.5 w-full overflow-hidden rounded-full bg-background neu-in-sm"
+                    >
+                      <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${(progress.done / Math.max(1, progress.total)) * 100}%` }} />
+                    </div>
+                    <Button variant="outline" size="sm" className="w-full" onClick={() => abortRef.current?.abort()}>Cancel</Button>
+                  </div>
+                )}
+                {ready.map((r) => (
+                  <Button key={r.url} asChild variant="outline" className="w-full">
+                    <a href={r.url} download={r.name}>
+                      <Download className="h-4 w-4" /> Save {r.name} ({(r.size / 1048576).toFixed(r.size > 10485760 ? 0 : 1)} MB)
+                    </a>
+                  </Button>
+                ))}
+                <p className="min-h-5 text-sm text-muted-foreground" role="status" aria-live="polite">{status}</p>
                 <p className="text-xs text-muted-foreground">Photos are processed in your browser and never uploaded.</p>
               </div>
             </CardContent>
