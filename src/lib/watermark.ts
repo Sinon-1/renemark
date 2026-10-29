@@ -198,7 +198,7 @@ function drawLayer(ctx: CanvasRenderingContext2D, l: Layer, W: number, H: number
 }
 
 /** Draw every watermark (and, for the preview only, the selection outline). Coordinates stay in photo pixels. */
-function paint(ctx: CanvasRenderingContext2D, layers: Layer[], W: number, H: number, k: number, highlightId?: string | null) {
+function paint(ctx: CanvasRenderingContext2D, layers: Layer[], W: number, H: number, k: number, highlightId?: string | null, pxPerCss = 1) {
   ctx.save();
   ctx.scale(k, k);
   layers.forEach((l) => drawLayer(ctx, l, W, H, k));
@@ -206,7 +206,7 @@ function paint(ctx: CanvasRenderingContext2D, layers: Layer[], W: number, H: num
   const sel = highlightId ? layers.find((l) => l.id === highlightId) : null;
   if (sel && isRenderable(sel)) {
     const { w, h } = layerBox(sel, W);
-    const pad = W * 0.006, lw = Math.max(2 / k, W * 0.0025);
+    const pad = W * 0.006, lw = (2 * pxPerCss) / k; // 2 screen pixels thick, whatever the photo size
     ctx.translate(sel.x * W, sel.y * H);
     ctx.rotate((sel.rotation * Math.PI) / 180);
     ctx.lineWidth = lw;
@@ -235,17 +235,47 @@ export function makePreviewSource(photo: HTMLImageElement, maxSide: number): Pre
   return { src: c, w: c.width, h: c.height, k };
 }
 
+/** Helper lines shown while a watermark is being dragged. Preview only; the export never draws them. */
+export interface Guides { snapX: boolean; snapY: boolean } // true = the watermark is sitting exactly on that centre line
+const SNAP_COLOR = "#ff3d9a";
+
+function drawGuides(ctx: CanvasRenderingContext2D, w: number, h: number, px: number, g: Guides) {
+  const line = (x1: number, y1: number, x2: number, y2: number, color: string, widthCss: number, dashed: boolean) => {
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.setLineDash(dashed ? [7 * px, 5 * px] : []);
+    ctx.lineWidth = (widthCss + 2) * px; // a dark edge underneath, so the line shows on bright photos too
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.stroke();
+    ctx.lineWidth = widthCss * px;
+    ctx.strokeStyle = color;
+    ctx.stroke();
+  };
+  ctx.save();
+  const faint = "rgba(255,255,255,0.7)";
+  line(w / 3, 0, w / 3, h, faint, 1, false);       // thirds
+  line((2 * w) / 3, 0, (2 * w) / 3, h, faint, 1, false);
+  line(0, h / 3, w, h / 3, faint, 1, false);
+  line(0, (2 * h) / 3, w, (2 * h) / 3, faint, 1, false);
+  line(w / 2, 0, w / 2, h, g.snapX ? SNAP_COLOR : "rgba(255,255,255,0.95)", g.snapX ? 2.5 : 1.5, !g.snapX); // centre
+  line(0, h / 2, w, h / 2, g.snapY ? SNAP_COLOR : "rgba(255,255,255,0.95)", g.snapY ? 2.5 : 1.5, !g.snapY);
+  ctx.restore();
+}
+
 /** Live preview: draws the small copy plus the watermarks, scaled to match. Cheap enough to run on every drag frame. */
 export function renderPreview(
   canvas: HTMLCanvasElement, source: PreviewSource, photoW: number, photoH: number,
-  layers: Layer[], highlightId?: string | null
+  layers: Layer[], highlightId?: string | null, guides?: Guides | null
 ) {
   if (canvas.width !== source.w) canvas.width = source.w; // resizing clears and reallocates, so only when needed
   if (canvas.height !== source.h) canvas.height = source.h;
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(source.src, 0, 0, source.w, source.h);
-  paint(ctx, layers, photoW, photoH, source.k, highlightId);
+  const px = canvas.clientWidth ? canvas.width / canvas.clientWidth : 1; // canvas pixels per screen pixel
+  paint(ctx, layers, photoW, photoH, source.k, highlightId, px);
+  if (guides) drawGuides(ctx, canvas.width, canvas.height, px, guides);
 }
 
 /** The export engine: the photo at full size (or scaled by k), then every watermark on top. */

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ImagePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { hitTest, makePreviewSource, renderPreview, type Layer, type PhotoItem } from "@/lib/watermark";
+import { hitTest, makePreviewSource, renderPreview, type Guides, type Layer, type PhotoItem } from "@/lib/watermark";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -15,13 +15,15 @@ interface Props {
 }
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+const SNAP = 0.02; // a watermark within 2% of the centre line jumps onto it
 
 export function PreviewStage({
-  photo, layers, selectedId, hint = "Tap a watermark to select it, then drag to move it.", onSelect, onMove, onFiles,
+  photo, layers, selectedId, hint = "Tap a watermark to select it, then drag to move it. Guide lines show while you drag.", onSelect, onMove, onFiles,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
+  const [guides, setGuides] = useState<Guides | null>(null); // only while a watermark is being dragged
 
   // The preview works on a smaller copy of the photo: much less to redraw on every drag frame.
   const source = useMemo(() => {
@@ -35,15 +37,16 @@ export function PreviewStage({
     if (!photo || !source) return;
     const id = requestAnimationFrame(() => {
       if (canvasRef.current)
-        renderPreview(canvasRef.current, source, photo.img.naturalWidth, photo.img.naturalHeight, layers, selectedId);
+        renderPreview(canvasRef.current, source, photo.img.naturalWidth, photo.img.naturalHeight, layers, selectedId, guides);
     });
     return () => cancelAnimationFrame(id);
-  }, [photo, source, layers, selectedId]);
+  }, [photo, source, layers, selectedId, guides]);
 
   /* ---- pick and drag a watermark ---- */
   const drag = useRef<{ id: string; dx: number; dy: number } | null>(null);
   const pending = useRef<{ x: number; y: number } | null>(null);
   const frame = useRef(0);
+  const snapped = useRef({ x: false, y: false });
   const onMoveRef = useRef(onMove);
   onMoveRef.current = onMove;
 
@@ -60,6 +63,8 @@ export function PreviewStage({
     if (!hit) return;
     onSelect(hit.id);
     drag.current = { id: hit.id, dx: hit.x - fx, dy: hit.y - fy }; // keep the grab point, so it does not jump
+    snapped.current = { x: false, y: false };
+    setGuides({ snapX: false, snapY: false });
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
@@ -67,7 +72,14 @@ export function PreviewStage({
     const d = drag.current;
     if (!d) return;
     const { fx, fy } = frac(e);
-    pending.current = { x: clamp01(fx + d.dx), y: clamp01(fy + d.dy) };
+    let x = clamp01(fx + d.dx), y = clamp01(fy + d.dy);
+    const snapX = Math.abs(x - 0.5) < SNAP, snapY = Math.abs(y - 0.5) < SNAP;
+    if (snapX) x = 0.5; // stick to the middle
+    if (snapY) y = 0.5;
+    if ((snapX && !snapped.current.x) || (snapY && !snapped.current.y)) navigator.vibrate?.(8); // tiny buzz on phones when it locks
+    snapped.current = { x: snapX, y: snapY };
+    setGuides((g) => (g && g.snapX === snapX && g.snapY === snapY ? g : { snapX, snapY }));
+    pending.current = { x, y };
     if (frame.current) return; // one update per frame is plenty
     frame.current = requestAnimationFrame(() => {
       frame.current = 0;
@@ -76,7 +88,7 @@ export function PreviewStage({
     });
   };
 
-  const up = () => { drag.current = null; pending.current = null; };
+  const up = () => { drag.current = null; pending.current = null; setGuides(null); };
 
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
